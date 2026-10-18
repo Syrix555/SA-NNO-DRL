@@ -67,11 +67,17 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     return grad_norms, grad_norms_clipped
 
 
+def stable_log_likelihood(probabilities):
+    """Sum log probabilities without producing ``-inf`` for underflowed zeros."""
+    if not torch.is_floating_point(probabilities):
+        raise TypeError("probabilities must be floating point")
+    return torch.log(probabilities.clamp_min(torch.finfo(probabilities.dtype).tiny)).sum(dim=-1)
+
+
 def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
     print("Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]['lr'], opts.run_name))
     step = epoch * (opts.epoch_size // opts.batch_size)
     start_time = time.time()
-    lr_scheduler.step(epoch)
 
     if not opts.no_tensorboard:
         tb_logger.add_scalar('learnrate_pg0', optimizer.param_groups[0]['lr'], step)
@@ -101,6 +107,10 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
         )
 
         step += 1
+
+    # Advance the schedule after all updates in this epoch. Calling step before
+    # optimizer.step skips the initial learning-rate value and emits a warning.
+    lr_scheduler.step()
 
     epoch_duration = time.time() - start_time
     print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
@@ -230,7 +240,7 @@ def train_batch(
     reward \
         = reward.view(opts.N_aug, batch_size, k_size).permute(1, 2, 0).reshape(batch_size, opts.N_aug*k_size)
 
-    log_likelihood = prob.log().sum(dim=-1)
+    log_likelihood = stable_log_likelihood(prob)
 
     loss = ((reward - reward.float().mean(dim=1, keepdims=True)) * log_likelihood).mean() - 0.1 * similarity.mean()
     # loss = reinforce_loss + bl_loss

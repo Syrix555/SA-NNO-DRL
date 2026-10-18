@@ -151,7 +151,9 @@ class AttentionModel(nn.Module):
             return cost, _log_p, pi
 
         if return_proj:
-            return cost, _log_p, self.predictor_head(embeddings)
+            # InstanceNorm1d treats dim=1 as channels; embeddings are [B, N, E].
+            projected = self.predictor_head(embeddings.transpose(1, 2)).transpose(1, 2)
+            return cost, _log_p, projected
 
         return cost, _log_p
 

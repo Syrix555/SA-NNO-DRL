@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from op_data_utils import load_op_dataset, normalize_op_instance
+from train import stable_log_likelihood
 from utils.functions import reduce_pomo_candidates, sample_many
 
 
@@ -63,3 +64,9 @@ def test_sample_many_selects_best_candidate_per_original_instance():
 
     assert torch.equal(routes, torch.tensor([[1], [3]]))
     assert torch.equal(costs_out, torch.tensor([1.0, 3.0]))
+
+
+def test_stable_log_likelihood_is_finite_for_zero_probabilities():
+    values = stable_log_likelihood(torch.tensor([[1.0, 0.0], [0.5, 0.5]]))
+
+    assert torch.isfinite(values).all()
