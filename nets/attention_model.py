@@ -111,7 +111,10 @@ class AttentionModel(nn.Module):
 
         #  the  predictor
         self.predictor_head = nn.Sequential(nn.Linear(embedding_dim, embedding_dim, bias=False),
-                                       nn.InstanceNorm1d(embedding_dim),
+                                       # Embeddings are [batch, nodes, embedding]. LayerNorm
+                                       # normalizes the embedding axis without transposing the
+                                       # input away from Linear's expected last dimension.
+                                       nn.LayerNorm(embedding_dim, elementwise_affine=False),
                                        nn.GELU(),  # hidden layer
                                        nn.Linear(embedding_dim, embedding_dim))
         # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embedding_dim
@@ -151,9 +154,7 @@ class AttentionModel(nn.Module):
             return cost, _log_p, pi
 
         if return_proj:
-            # InstanceNorm1d treats dim=1 as channels; embeddings are [B, N, E].
-            projected = self.predictor_head(embeddings.transpose(1, 2)).transpose(1, 2)
-            return cost, _log_p, projected
+            return cost, _log_p, self.predictor_head(embeddings)
 
         return cost, _log_p
 
