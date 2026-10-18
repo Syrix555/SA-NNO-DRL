@@ -9,6 +9,7 @@ import csv
 import os
 import time
 import re
+import argparse
 from train import augment
 from make_dataset import make_dataset, check_extension, save_dataset
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
@@ -19,7 +20,7 @@ warnings.simplefilter("ignore", ResourceWarning)
 
 # load model
 from utils import load_model
-device = torch.device("cuda:0")
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def angle_sort(task, depot):
 
@@ -269,29 +270,29 @@ def plot_picture(depot, task, index, line, best_fit):
 
 
 if __name__ == "__main__":
-    model, _ = load_model('outputs/T200U5const/epoch-9.pt')
+    parser = argparse.ArgumentParser(description='Run SA multi-UAV inference for OP')
+    parser.add_argument('--model', required=True, help='checkpoint file or directory')
+    parser.add_argument('--dataset', required=True, help='OP .pkl dataset')
+    parser.add_argument('--num-samples', type=int, default=30)
+    parser.add_argument('--uav-num', type=int, default=5)
+    parser.add_argument('--device', default=str(device))
+    opts = parser.parse_args()
+    device = torch.device(opts.device)
+    model, _ = load_model(opts.model)
     model.to(device)
     model.eval()
     model.set_decode_type('greedy')
 
-    fileNameList = ['op_data/unif/op_unif300_len2_seed12345.pkl',
-                    'op_data/unif/op_unif400_len2_seed12345.pkl',
-                    'op_data/unif/op_unif500_len2_seed12345.pkl',
-                    'op_data/unif/op_unif600_len2_seed12345.pkl',
-                    'op_data/unif/op_unif700_len2_seed12345.pkl',
-                    'op_data/unif/op_unif800_len2_seed12345.pkl',
-                    'op_data/unif/op_unif900_len2_seed12345.pkl',
-                    'op_data/unif/op_unif1000_len2_seed12345.pkl']
+    fileNameList = [opts.dataset]
     for filename in fileNameList:
     # filename = 'small_data/op/op_unif200_len2_seed12345.pkl'
         print(filename)
-        rules = re.compile(r'op_data/unif/(.*?).pkl')
-        new_filename = re.findall(rules, str(filename))[0]
+        new_filename = os.path.splitext(os.path.basename(filename))[0]
         #filename = os.path.join('data/op/const', filename)
-        num_samples = 30
+        num_samples = opts.num_samples
         # np.random.seed(1234567)
         # task_num = 200
-        uav_num = 5
+        uav_num = opts.uav_num
         print('UAV num:', uav_num)
         # depot = np.array([0.5, 0.5])
         # MAX_LENGTHS = 3.
@@ -303,7 +304,7 @@ if __name__ == "__main__":
         for index, batch in enumerate(data):
             start = time.time()
             task = batch['loc']
-            depot = batch['depot'].squeeze(0)
+            depot = batch['depot']
             prize = batch['prize']
             MAX_LENGTHS = batch['max_length']
             best_fit, best_index, best_line = sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num)

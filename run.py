@@ -1,16 +1,11 @@
 #!/usr/bin/env python
 
 import os
-# 此示例选择了编号1和2的GPU，若选择其他编号的GPU更改等号右边的值即可
-# 注意GPU编号是从0开始的
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 import json
 import pprint as pp
-import warnings
 
 import torch
 import torch.optim as optim
-from tensorboard_logger import Logger as TbLogger
 
 from nets.critic_network import CriticNetwork
 from options import get_options
@@ -20,14 +15,25 @@ from nets.attention_model import AttentionModel
 from nets.pointer_network import PointerNetwork, CriticNetworkLSTM
 from utils import torch_load_cpu, load_problem
 
-warnings.filterwarnings("ignore")
-
-# warnings.simplefilter("ignore", DeprecationWarning)
-# warnings.simplefilter("ignore", UserWarning)
-# warnings.simplefilter("ignore", ResourceWarning)
-
-
 def run(opts):
+    if opts.check_config:
+        pp.pprint(vars(opts))
+        print("Configuration valid; no model loaded or datasets generated.")
+        return
+
+    tb_logger = None
+    if not opts.no_tensorboard:
+        from torch.utils.tensorboard import SummaryWriter
+        tb_logger = SummaryWriter(os.path.join(
+            opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name))
+    try:
+        _run(opts, tb_logger)
+    finally:
+        if tb_logger is not None:
+            tb_logger.close()
+
+
+def _run(opts, tb_logger):
 
     # Pretty print the run args
     pp.pprint(vars(opts))
@@ -35,18 +41,13 @@ def run(opts):
     # Set the random seed
     torch.manual_seed(opts.seed)
 
-    # Optionally configure tensorboard
-    tb_logger = None
-    if not opts.no_tensorboard:
-        tb_logger = TbLogger(os.path.join(opts.log_dir, "{}_{}".format(opts.problem, opts.graph_size), opts.run_name))
-
     os.makedirs(opts.save_dir)
     # Save arguments so exact configuration can always be found
     with open(os.path.join(opts.save_dir, "args.json"), 'w') as f:
         json.dump(vars(opts), f, indent=True)
 
     # Set the device
-    opts.device = torch.device("cuda:0" if opts.use_cuda else "cpu")
+    opts.device = torch.device(opts.device)
     print(opts.device)
 
     # Figure out what's the problem
@@ -80,7 +81,9 @@ def run(opts):
     ).to(opts.device)
 
     if opts.use_cuda and torch.cuda.device_count() > 1:
-        model = torch.nn.DataParallel(model)
+        device_ids = [opts.device.index] + [
+            i for i in range(torch.cuda.device_count()) if i != opts.device.index]
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
 
     # Overwrite model parameters by parameters to load
     model_ = get_inner_model(model)
@@ -148,7 +151,8 @@ def run(opts):
 
     # Start the actual training loop
     val_dataset = problem.make_dataset(
-        size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution)
+        size=opts.graph_size, num_samples=opts.val_size, filename=opts.val_dataset, distribution=opts.data_distribution,
+        uav_num=opts.uav_num, max_length=opts.max_length)
 
     if opts.resume:
         epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])

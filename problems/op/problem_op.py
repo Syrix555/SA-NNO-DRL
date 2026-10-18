@@ -1,8 +1,7 @@
 from torch.utils.data import Dataset
 import torch
 import math
-import os
-import pickle
+from op_data_utils import load_op_dataset
 from problems.op.state_op import StateOP
 from utils.beam_search import beam_search
 
@@ -75,79 +74,61 @@ class OP(object):
         return beam_search(state, beam_size, propose_expansions)
 
 
-def generate_instance(size, prize_type, num_samples):
-    # Details see paper
+def generate_instance(size, prize_type, num_samples, uav_num=5, max_length=2.0):
+    """Generate exactly num_samples angular sectors of size nodes each.
 
-    MAX_LENGTHS = {
-        20: 2.,
-        30: 2.,
-        40: 2.,
-        50: 2.,
-        60: 2.,
-        100: 2.
-    }
+    One parent mission contains uav_num * size nodes. Its sorted angular
+    sectors are training instances; any surplus sectors in the last mission
+    are discarded. num_samples counts sectors, rather than parent missions.
+    """
+    if size <= 0 or uav_num <= 0 or num_samples < 0:
+        raise ValueError("size/uav_num must be positive; num_samples must be nonnegative")
+    if not math.isfinite(max_length) or max_length <= 0:
+        raise ValueError("max_length must be finite and positive")
+    if prize_type not in ('const', 'unif', 'dist'):
+        raise ValueError("OP distribution must be const, unif or dist")
 
-    uav_num = 5
     data = []
-    for i in range(num_samples):
-        location = torch.FloatTensor(uav_num * size, 2).uniform_(0, 1)
-        depot = torch.Tensor([0.5, 0.5])
+    for _ in range((num_samples + uav_num - 1) // uav_num):
+        location = torch.rand(uav_num * size, 2, dtype=torch.float32)
+        depot = torch.tensor([0.5, 0.5], dtype=torch.float32)
         lab = location - depot
-        angle = torch.atan2(lab[:, 1], lab[:, 0])
-        angle_sort = angle.argsort()
-        relocation = location[angle_sort]
-        for j in range(uav_num):
-            loc = relocation[j * size: (j + 1) * size] if j < uav_num - 1 else relocation[j * size:]
-            # prize_type = 'unif'
-            # Methods taken from Fischetti et al. 1998
+        relocation = location[torch.atan2(lab[:, 1], lab[:, 0]).argsort()]
+        for j in range(min(uav_num, num_samples - len(data))):
+            loc = relocation[j * size: (j + 1) * size]
             if prize_type == 'const':
-                prize = torch.ones(size)
+                prize = torch.ones(size, dtype=torch.float32)
             elif prize_type == 'unif':
                 prize = (1 + torch.randint(0, 100, size=(size,))).float() / 100
-            else:  # Based on distance to depot
-                assert prize_type == 'dist'
-                prize_ = (depot[None, :] - loc).norm(p=2, dim=-1)
-                prize = (1 + (prize_ / prize_.max(dim=-1, keepdim=True)[0] * 99).int()).float() / 100.
-
+            else:
+                distance = (depot[None, :] - loc).norm(p=2, dim=-1)
+                scale = distance.max().clamp_min(torch.finfo(torch.float32).eps)
+                prize = (1 + (distance / scale * 99).int()).float() / 100
             data.append({
                 'loc': loc,
-                # Uniform 1 - 9, scaled by capacities
                 'prize': prize,
                 'depot': depot,
-                'max_length': torch.tensor(MAX_LENGTHS[size])
+                'max_length': torch.tensor(max_length, dtype=torch.float32)
             })
     return data
 
+
 class OPDataset(Dataset):
-    
-    def __init__(self, filename=None, size=50, num_samples=1000000, offset=0, distribution='const'):
-        super(OPDataset, self).__init__()
-        assert distribution is not None, "Data distribution must be specified for OP"
-        # Currently the distribution can only vary in the type of the prize
-        prize_type = distribution
 
-        # self.data_set = []
+    def __init__(self, filename=None, size=50, num_samples=1000000, offset=0,
+                 distribution='const', uav_num=5, max_length=2.0):
+        super().__init__()
+        if offset < 0 or num_samples < 0:
+            raise ValueError("offset and num_samples must be nonnegative")
         if filename is not None:
-            assert os.path.splitext(filename)[1] == '.pkl'
-
-            with open(filename, 'rb') as f:
-                data = pickle.load(f)
-                self.data = [
-                    {
-                        'loc': torch.FloatTensor(loc),
-                        'prize': torch.FloatTensor(prize),
-                        'depot': torch.FloatTensor(depot),
-                        'max_length': torch.tensor(max_length)
-                    }
-                    for depot, loc, prize, max_length in (data[offset:offset+num_samples])
-                ]
+            self.data = [
+                {key: torch.from_numpy(value.copy()) for key, value in record.items()}
+                for record in load_op_dataset(filename, num_samples=num_samples, offset=offset)
+            ]
         else:
-            self.data = generate_instance(size, prize_type, num_samples)
-            # self.data = [
-            #     generate_instance(size, prize_type)
-            #     for i in range(num_samples)
-            # ]
-
+            if offset != 0:
+                raise ValueError("offset is only supported for file-backed OP datasets")
+            self.data = generate_instance(size, distribution, num_samples, uav_num, max_length)
         self.size = len(self.data)
 
     def __len__(self):

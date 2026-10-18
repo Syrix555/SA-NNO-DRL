@@ -1,17 +1,22 @@
 import os
 import time
 import argparse
-import torch
+import math
+from pathlib import Path
+
+from runtime_config import resolve_device
 
 
 def get_options(args=None):
     parser = argparse.ArgumentParser(
-        description="Attention based model for solving the Travelling Salesman Problem with Reinforcement Learning")
+        description="Train the OP attention model for multi-UAV planning")
 
     # Data
     parser.add_argument('--problem', default='op', help="The problem to solve, default 'tsp'")
     parser.add_argument('--graph_size', type=int, default=20, help="The size of the problem graph")
     parser.add_argument('--uav_num', type=int, default=5, help="The number of UAVs")
+    parser.add_argument('--max_length', type=float, default=2.0,
+                        help='Generated OP route budget; file-backed datasets retain their own budgets')
     parser.add_argument('--N_aug', type=int, default=4, help="The size of the problem graph")
     parser.add_argument('--batch_size', type=int, default=64, help='Number of instances per batch during training')
     parser.add_argument('--epoch_size', type=int, default=640000, help='Number of instances per epoch during training')
@@ -42,6 +47,9 @@ def get_options(args=None):
     # parser.add_argument('--use_cuda', action='store_true', help='Use CUDA')
 
     parser.add_argument('--no_cuda', action='store_true', help='Disable CUDA')
+    parser.add_argument('--device', default='auto', help='auto, cpu or cuda:N (visible GPU index)')
+    parser.add_argument('--check_config', action='store_true',
+                        help='Check options, device and input paths, then exit without creating outputs or data')
     parser.add_argument('--exp_beta', type=float, default=0.8,
                         help='Exponential moving average baseline decay (default 0.8)')
     parser.add_argument('--baseline', default='rollout',
@@ -77,7 +85,31 @@ def get_options(args=None):
 
     opts = parser.parse_args(args)
 
-    opts.use_cuda = torch.cuda.is_available() and not opts.no_cuda
+    if opts.problem != 'op' or opts.model != 'attention':
+        parser.error('The repaired main flow currently supports only --problem op --model attention')
+    for name in ('graph_size', 'uav_num', 'batch_size', 'epoch_size', 'val_size',
+                 'eval_batch_size', 'n_epochs', 'log_step'):
+        if getattr(opts, name) <= 0:
+            parser.error(f'--{name} must be positive')
+    if not math.isfinite(opts.max_length) or opts.max_length <= 0:
+        parser.error('--max_length must be finite and positive')
+    if opts.data_distribution not in ('const', 'unif', 'dist'):
+        parser.error('--data_distribution must be const, unif or dist')
+    if opts.load_path and opts.resume:
+        parser.error('Only one of --load_path and --resume may be specified')
+    for name in ('load_path', 'resume', 'val_dataset'):
+        path = getattr(opts, name)
+        if path and not Path(path).is_file():
+            parser.error(f'--{name}: file not found: {path}')
+    if opts.val_dataset and Path(opts.val_dataset).suffix != '.pkl':
+        parser.error('--val_dataset must be a .pkl file')
+    if opts.eval_only and not (opts.load_path or opts.resume):
+        parser.error('--eval_only requires --load_path or --resume')
+    try:
+        opts.device = str(resolve_device(opts.device, opts.no_cuda))
+    except (ValueError, RuntimeError) as exc:
+        parser.error(str(exc))
+    opts.use_cuda = opts.device.startswith('cuda')
     opts.run_name = "{}_{}".format(opts.run_name, time.strftime("%Y%m%dT%H%M%S"))
     opts.save_dir = os.path.join(
         opts.output_dir,
@@ -86,6 +118,8 @@ def get_options(args=None):
     )
     if opts.bl_warmup_epochs is None:
         opts.bl_warmup_epochs = 1 if opts.baseline == 'rollout' else 0
-    assert (opts.bl_warmup_epochs == 0) or (opts.baseline == 'rollout')
-    assert opts.epoch_size % opts.batch_size == 0, "Epoch size must be integer multiple of batch size!"
+    if opts.bl_warmup_epochs < 0 or (opts.bl_warmup_epochs != 0 and opts.baseline != 'rollout'):
+        parser.error('Positive --bl_warmup_epochs requires --baseline rollout')
+    if opts.epoch_size % opts.batch_size != 0:
+        parser.error('Epoch size must be an integer multiple of batch size')
     return opts
