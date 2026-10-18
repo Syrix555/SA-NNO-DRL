@@ -143,6 +143,11 @@ def _run(opts, tb_logger):
         )
     )
 
+    # Create the scheduler before restoring optimizer state. LambdaLR's
+    # constructor initializes optimizer learning rates; creating it afterwards
+    # would overwrite the rates restored from the checkpoint.
+    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
+
     # Load optimizer state
     if 'optimizer' in load_data:
         optimizer.load_state_dict(load_data['optimizer'])
@@ -152,8 +157,6 @@ def _run(opts, tb_logger):
                 if torch.is_tensor(v):
                     state[k] = v.to(opts.device)
 
-    # Initialize learning rate scheduler, decay by lr_decay once per epoch!
-    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
     if 'lr_scheduler' in load_data:
         lr_scheduler.load_state_dict(load_data['lr_scheduler'])
 
