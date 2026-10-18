@@ -12,11 +12,8 @@ import re
 import argparse
 from train import augment
 from make_dataset import make_dataset, check_extension, save_dataset
+from runtime_config import resolve_model_path, resolve_device
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
-
-warnings.simplefilter("ignore", DeprecationWarning)
-warnings.simplefilter("ignore", UserWarning)
-warnings.simplefilter("ignore", ResourceWarning)
 
 # load model
 from utils import load_model
@@ -41,7 +38,10 @@ def change_node(loc, depot, MAX_LENGTHS):
     y_max = np.max(loc[:, 1])
     y_min = np.min(loc[:, 1])
     # scale factor
-    s = 1. / np.max(np.array(x_max-x_min, y_max-y_min))
+    span = max(x_max - x_min, y_max - y_min)
+    if span <= 0:
+        raise ValueError("Cannot normalize a degenerate task geometry")
+    s = 1. / span
     new_length = s*MAX_LENGTHS
     loc[:, 0] = s*(loc[:, 0] - x_min)
     loc[:, 1] = s*(loc[:, 1] - y_min)
@@ -55,6 +55,8 @@ def change_node(loc, depot, MAX_LENGTHS):
     return new_loc, new_depot, new_length
 
 def cal_fitness(dataset, uav_num):
+    if len(dataset) != uav_num:
+        raise ValueError("SA model batch must contain exactly one instance per UAV")
     dataloader = DataLoader(dataset, batch_size=uav_num)
     batch = next(iter(dataloader))
     N_aug = 4
@@ -73,12 +75,59 @@ def cal_fitness(dataset, uav_num):
     return fitness.cpu().numpy(), pi.cpu().numpy()
 
 
+def validate_allocation(task, depot, prize, max_length, index_table, line, tolerance=1e-5):
+    """Validate assignment uniqueness, route budgets and reported reward."""
+    task = np.asarray(task, dtype=np.float32)
+    depot = np.asarray(depot, dtype=np.float32).reshape(2)
+    prize = np.asarray(prize, dtype=np.float32).reshape(-1)
+    max_length = float(np.asarray(max_length))
+    if task.ndim != 2 or task.shape[1] != 2 or len(task) == 0:
+        raise ValueError("task must have shape [N, 2], with N > 0")
+    if prize.shape != (len(task),):
+        raise ValueError("prize must match the task count")
+    if max_length <= 0 or not np.isfinite(max_length):
+        raise ValueError("max_length must be finite and positive")
+
+    visited = []
+    total_prize = 0.0
+    total_length = 0.0
+    for assignment, selected in zip(index_table, line):
+        assignment = np.asarray(assignment, dtype=np.int64)
+        selected = np.asarray(selected, dtype=np.int64)
+        if len(selected) and ((selected < 0).any() or (selected >= len(assignment)).any()):
+            raise ValueError("SA route contains an out-of-range local node")
+        global_ids = assignment[selected] if len(selected) else np.empty(0, dtype=np.int64)
+        if len(global_ids):
+            visited.extend(global_ids.tolist())
+            route = np.concatenate((depot[None, :], task[global_ids], depot[None, :]), axis=0)
+            route_length = np.linalg.norm(route[1:] - route[:-1], axis=1).sum()
+            if route_length > max_length + tolerance:
+                raise ValueError(f"SA route exceeds max_length: {route_length} > {max_length}")
+            total_length += float(route_length)
+            total_prize += float(prize[global_ids].sum())
+    if len(visited) != len(set(visited)):
+        raise ValueError("SA allocation assigns a task more than once")
+    return total_prize, total_length
+
+
 def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
     # start = time.time()
+    task = np.asarray(task, dtype=np.float32)
+    depot = np.asarray(depot, dtype=np.float32).reshape(2)
+    prize = np.asarray(prize, dtype=np.float32).reshape(-1)
+    max_length = float(np.asarray(MAX_LENGTHS))
+    if uav_num <= 0 or task.ndim != 2 or task.shape[1] != 2:
+        raise ValueError("uav_num must be positive and task must have shape [N, 2]")
+    if task.shape[0] < uav_num:
+        raise ValueError("task count must be at least the UAV count")
+    if prize.shape != (task.shape[0],):
+        raise ValueError("prize must match task count")
+    if max_length <= 0 or not np.isfinite(max_length):
+        raise ValueError("max_length must be finite and positive")
     task_num = task.shape[0]
     angle, index = angle_sort(task, depot)
-    num = np.int64(np.ceil(task_num / uav_num))
-    part_angle = angle[[np.int64(i * num + num / 2) for i in range(uav_num)]]  # 角度划分点
+    groups = np.array_split(index, uav_num)
+    part_angle = np.array([np.median(angle[np.isin(index, group)]) for group in groups])
 
     # add depot at the end of task set
     task = np.concatenate((task, [depot]), axis=0)
@@ -86,8 +135,8 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
     prize = np.append(prize, 0)
 
     old_index_table, ll = [], []
-    for i in range(uav_num):
-        a = index[i * num: (i + 1) * num] if i < uav_num - 1 else index[i * num:]
+    for i, group in enumerate(groups):
+        a = group
         ll.append(len(a))
         old_index_table.append(a)
     max_ll = max(ll)
@@ -106,7 +155,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
             'loc': torch.FloatTensor(loc).to(device),
             'prize': torch.FloatTensor(prz).to(device),
             'depot': torch.FloatTensor(depot).to(device),
-            'max_length': torch.tensor(MAX_LENGTHS, dtype=torch.float32).to(device)
+            'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
         })
     fitness, pi = cal_fitness(dataset, uav_num)
     # print(fitness)
@@ -178,7 +227,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                         'loc': torch.FloatTensor(loc).to(device),
                         'prize': torch.FloatTensor(prz).to(device),
                         'depot': torch.FloatTensor(depot).to(device),
-                        'max_length': torch.tensor(MAX_LENGTHS, dtype=torch.float32).to(device)
+                        'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
                     })
                 fit, pi = cal_fitness(dataset, uav_num)
                 new_fit = sum(fit)
@@ -213,7 +262,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                         'loc': torch.FloatTensor(loc).to(device),
                         'prize': torch.FloatTensor(prz).to(device),
                         'depot': torch.FloatTensor(depot).to(device),
-                        'max_length': torch.tensor(MAX_LENGTHS, dtype=torch.float32).to(device)
+                        'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
                     })
                 fit, pi = cal_fitness(dataset, uav_num)
                 new_fit = sum(fit)
@@ -241,6 +290,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                     line = new_line
         T *= alpha
         # duration = time.time() - start
+    validate_allocation(task, depot, prize, max_length, best_index, best_line)
     return best_fit, best_index, best_line
 
 
@@ -277,8 +327,9 @@ if __name__ == "__main__":
     parser.add_argument('--uav-num', type=int, default=5)
     parser.add_argument('--device', default=str(device))
     opts = parser.parse_args()
-    device = torch.device(opts.device)
-    model, _ = load_model(opts.model)
+    device = resolve_device(opts.device)
+    model_path = resolve_model_path(opts.model)
+    model, _ = load_model(str(model_path))
     model.to(device)
     model.eval()
     model.set_decode_type('greedy')
