@@ -6,6 +6,8 @@
 
 阶段一状态：已实施代码与 uv 项目配置；目标 GPU 上的训练和 SA 端到端验证待执行。
 
+阶段二状态：源码修改与候选选择测试已准备；目标机器验证待执行。本机不执行测试。
+
 阶段一环境命令（目标 RTX 5080 机器）：
 
 ```bash
@@ -19,6 +21,14 @@ CPU 逻辑检查使用：
 uv sync --extra cpu
 uv run --extra cpu python -m pytest
 ```
+
+阶段二目标 GPU 验证使用：
+
+```bash
+uv run --extra cu130 pytest tests/test_stage1_data.py -q
+```
+
+该测试现在也覆盖 POMO 候选成本与路线的同步选择，以及 `sample_many` 的按原始样本聚合；本机按用户要求不执行。
 
 两个 extra 互斥；不要同时启用 `cpu` 和 `cu130`。`uv.lock` 已锁定 Python 3.11 的解析结果，GPU extra 从 PyTorch CUDA 13.0 索引安装 `torch==2.14.1+cu130`。
 

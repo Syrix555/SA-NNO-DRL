@@ -136,7 +136,9 @@ class AttentionModel(nn.Module):
         """
 
         if self.checkpoint_encoder:
-            embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
+            embeddings, _ = checkpoint(
+                self.embedder, self._init_embed(input), use_reentrant=False
+            )
         else:
             embeddings, _ = self.embedder(self._init_embed(input))
 
@@ -290,9 +292,9 @@ class AttentionModel(nn.Module):
         batch_size, pomo_size, _ = probs.size()
         if self.decode_type == "greedy":
             selected = probs.argmax(dim=2)
-            prob = probs[torch.arange(batch_size)[:, None].expand(batch_size, pomo_size),
-                         torch.arange(pomo_size)[None, :].expand(batch_size, pomo_size), selected].reshape(batch_size,
-                                                                                                           pomo_size)
+            batch_idx = torch.arange(batch_size, device=probs.device)[:, None].expand(batch_size, pomo_size)
+            pomo_idx = torch.arange(pomo_size, device=probs.device)[None, :].expand(batch_size, pomo_size)
+            prob = probs[batch_idx, pomo_idx, selected].reshape(batch_size, pomo_size)
             assert not mask.gather(-1, selected.unsqueeze(
                 -1)).data.any(), "Decode greedy: infeasible action has maximum probability"
 
@@ -301,8 +303,9 @@ class AttentionModel(nn.Module):
                 # with torch.no_grad():
                 selected = probs.reshape(batch_size*pomo_size, -1).multinomial(1)\
                     .squeeze(1).reshape(batch_size, pomo_size)
-                prob = probs[torch.arange(batch_size)[:, None].expand(batch_size, pomo_size),
-                             torch.arange(pomo_size)[None, :].expand(batch_size, pomo_size), selected].reshape(batch_size, pomo_size)
+                batch_idx = torch.arange(batch_size, device=probs.device)[:, None].expand(batch_size, pomo_size)
+                pomo_idx = torch.arange(pomo_size, device=probs.device)[None, :].expand(batch_size, pomo_size)
+                prob = probs[batch_idx, pomo_idx, selected].reshape(batch_size, pomo_size)
                 if (prob != 0).all():
                     break
             # # Check if sampling went OK, can go wrong due to bug on GPU

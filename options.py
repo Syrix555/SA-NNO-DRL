@@ -52,8 +52,8 @@ def get_options(args=None):
                         help='Check options, device and input paths, then exit without creating outputs or data')
     parser.add_argument('--exp_beta', type=float, default=0.8,
                         help='Exponential moving average baseline decay (default 0.8)')
-    parser.add_argument('--baseline', default='rollout',
-                        help="Baseline to use: 'rollout', 'critic' or 'exponential'. Defaults to no baseline.")
+    parser.add_argument('--baseline', default=None,
+                        help='Legacy baseline is disabled for the repaired OP flow; use candidate mean baseline')
     parser.add_argument('--bl_alpha', type=float, default=0.05,
                         help='Significance in the t-test for updating rollout baseline')
     parser.add_argument('--bl_warmup_epochs', type=int, default=None,
@@ -87,10 +87,14 @@ def get_options(args=None):
 
     if opts.problem != 'op' or opts.model != 'attention':
         parser.error('The repaired main flow currently supports only --problem op --model attention')
+    if opts.baseline is not None:
+        parser.error('Legacy --baseline options are not supported for OP; omit --baseline')
     for name in ('graph_size', 'uav_num', 'batch_size', 'epoch_size', 'val_size',
                  'eval_batch_size', 'n_epochs', 'log_step'):
         if getattr(opts, name) <= 0:
             parser.error(f'--{name} must be positive')
+    if opts.N_aug < 2:
+        parser.error('--N_aug must be at least 2 for consistency training')
     if not math.isfinite(opts.max_length) or opts.max_length <= 0:
         parser.error('--max_length must be finite and positive')
     if opts.data_distribution not in ('const', 'unif', 'dist'):

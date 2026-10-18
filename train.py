@@ -10,6 +10,7 @@ from torch.nn import DataParallel
 from nets.attention_model import set_decode_type
 from utils.log_utils import log_values
 from utils import move_to
+from utils.functions import reduce_pomo_candidates
 
 
 def get_inner_model(model):
@@ -21,21 +22,23 @@ def validate(model, dataset, opts):
     print('Validating...')
     cost = rollout(model, dataset, opts)
     avg_cost = cost.mean()
+    stderr = cost.std(unbiased=False) / math.sqrt(max(len(cost), 1))
     print('Validation overall avg_cost: {} +- {}'.format(
-        avg_cost, torch.std(cost) / math.sqrt(len(cost))))
+        avg_cost, stderr))
 
     return avg_cost
 
 
 def rollout(model, dataset, opts):
-    # Put in greedy evaluation mode!
-    set_decode_type(model, "sampling")
+    # Validation and baselines must be deterministic and use the best POMO route.
+    set_decode_type(model, "greedy")
     model.eval()
 
     def eval_model_bat(bat):
         with torch.no_grad():
             cost, _ = model(move_to(bat, opts.device))
-        return cost.data.cpu()
+        best_cost, _ = reduce_pomo_candidates(cost)
+        return best_cost.detach().cpu()
 
     return torch.cat([
         eval_model_bat(bat)
@@ -204,11 +207,15 @@ def train_batch(
     # Evaluate model, get costs and log probabilities
     reward, prob, predict_emb = model(x_aug, return_proj=True)
     _, k_size, n_length = prob.size()
+    augmented_batch_size = reward.size(0)
+    if augmented_batch_size % opts.N_aug != 0:
+        raise RuntimeError("Augmented batch size must be divisible by N_aug")
+    batch_size = augmented_batch_size // opts.N_aug
 
     ######################################################################
     # rotational invariant consistancy learning
     ######################################################################
-    proj_nodes = predict_emb.reshape(opts.N_aug, -1, predict_emb.shape[1], predict_emb.shape[2])
+    proj_nodes = predict_emb.reshape(opts.N_aug, batch_size, predict_emb.shape[1], predict_emb.shape[2])
 
     cos = torch.nn.CosineSimilarity(dim=-1)
     similarity = 0
@@ -219,9 +226,9 @@ def train_batch(
 
     # Calculate loss
     prob \
-        = prob.view(opts.N_aug, opts.batch_size, k_size, n_length).permute(1, 2, 0, 3).reshape(-1, opts.N_aug*k_size, n_length)
+        = prob.view(opts.N_aug, batch_size, k_size, n_length).permute(1, 2, 0, 3).reshape(batch_size, opts.N_aug*k_size, n_length)
     reward \
-        = reward.view(opts.N_aug, opts.batch_size, k_size).permute(1, 2, 0).reshape(-1, opts.N_aug*k_size)
+        = reward.view(opts.N_aug, batch_size, k_size).permute(1, 2, 0).reshape(batch_size, opts.N_aug*k_size)
 
     log_likelihood = prob.log().sum(dim=-1)
 

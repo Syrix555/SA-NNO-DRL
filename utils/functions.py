@@ -176,32 +176,65 @@ def do_batch_rep(v, n):
     return v[None, ...].expand(n, *v.size()).contiguous().view(-1, *v.size()[1:])
 
 
+def reduce_pomo_candidates(costs, sequences=None):
+    """Select the lowest-cost POMO candidate independently per instance.
+
+    ``costs`` must be ``[batch, pomo]``. If sequences are supplied they must
+    be ``[batch, pomo, steps]`` and are gathered with the same candidate index.
+    Orienteering costs are negative collected prizes, so ``min`` is the desired
+    objective in both training and evaluation.
+    """
+    if costs.ndim != 2:
+        raise ValueError(f"costs must have shape [batch, pomo], got {tuple(costs.shape)}")
+    best_costs, best_idx = costs.min(dim=1)
+    if sequences is None:
+        return best_costs, None
+    if sequences.ndim != 3 or sequences.shape[:2] != costs.shape:
+        raise ValueError(
+            f"sequences must have shape [batch, pomo, steps] matching costs, got {tuple(sequences.shape)}"
+        )
+    best_sequences = sequences.gather(1, best_idx[:, None, None].expand(-1, 1, sequences.size(-1))).squeeze(1)
+    return best_costs, best_sequences
+
+
 def sample_many(inner_func, get_cost_func, input, batch_rep=1, iter_rep=1):
     """
     :param input: (batch_size, graph_size, node_dim) input node features
     :return:
     """
-    input = do_batch_rep(input, batch_rep)
+    if batch_rep < 1 or iter_rep < 1:
+        raise ValueError("batch_rep and iter_rep must be positive")
 
+    def batch_size(value):
+        if isinstance(value, dict):
+            return batch_size(next(iter(value.values())))
+        if isinstance(value, (tuple, list)):
+            return batch_size(value[0])
+        return value.size(0)
+
+    source_batch_size = batch_size(input)
+    input = do_batch_rep(input, batch_rep)
     costs = []
     pis = []
     for i in range(iter_rep):
         _log_p, pi = inner_func(input)
-        # pi.view(-1, batch_rep, pi.size(-1))
         cost, mask = get_cost_func(input, pi)
 
-        costs.append(cost.view(batch_rep, -1).t())
-        pis.append(pi.view(batch_rep, -1, pi.size(-1)).transpose(0, 1))
+        if cost.ndim != 2 or pi.ndim != 3:
+            raise ValueError("sample_many expects model costs [batch, pomo] and routes [batch, pomo, steps]")
+        best_cost, best_pi = reduce_pomo_candidates(cost, pi)
+        costs.append(best_cost.view(batch_rep, source_batch_size).transpose(0, 1))
+        pis.append(best_pi.view(batch_rep, source_batch_size, pi.size(-1)).transpose(0, 1))
 
     max_length = max(pi.size(-1) for pi in pis)
-    # (batch_size * batch_rep, iter_rep, max_length) => (batch_size, batch_rep * iter_rep, max_length)
+    # (batch_size, iter_rep, max_length) => (batch_size, batch_rep * iter_rep, max_length)
     pis = torch.cat(
         [F.pad(pi, (0, max_length - pi.size(-1))) for pi in pis],
         1
     )  # .view(embeddings.size(0), batch_rep * iter_rep, max_length)
     costs = torch.cat(costs, 1)
 
-    # (batch_size)
+    # Select the best sampled candidate per original instance.
     mincosts, argmincosts = costs.min(-1)
     # (batch_size, minlength)
     minpis = pis[torch.arange(pis.size(0), out=argmincosts.new()), argmincosts]
