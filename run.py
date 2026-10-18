@@ -59,7 +59,12 @@ def _run(opts, tb_logger):
     load_path = opts.load_path if opts.load_path is not None else opts.resume
     if load_path is not None:
         print('  [*] Loading data from {}'.format(load_path))
-        load_data = torch_load_cpu(load_path)
+        load_data = torch_load_cpu(load_path, allow_legacy=opts.allow_legacy_checkpoint)
+        if not isinstance(load_data, dict) or 'model' not in load_data:
+            raise ValueError(f"Checkpoint {load_path} does not contain a model state_dict")
+        version = load_data.get('checkpoint_format_version')
+        if version is not None and version != 2:
+            raise ValueError(f"Unsupported checkpoint format version: {version}")
 
     # Initialize model
     model_class = {
@@ -87,7 +92,8 @@ def _run(opts, tb_logger):
 
     # Overwrite model parameters by parameters to load
     model_ = get_inner_model(model)
-    model_.load_state_dict({**model_.state_dict(), **load_data.get('model', {})})
+    if load_data:
+        model_.load_state_dict(load_data['model'], strict=True)
 
     # Initialize baseline
     if opts.baseline == 'exponential':
@@ -148,6 +154,8 @@ def _run(opts, tb_logger):
 
     # Initialize learning rate scheduler, decay by lr_decay once per epoch!
     lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: opts.lr_decay ** epoch)
+    if 'lr_scheduler' in load_data:
+        lr_scheduler.load_state_dict(load_data['lr_scheduler'])
 
     # Start the actual training loop
     val_dataset = problem.make_dataset(
@@ -155,10 +163,13 @@ def _run(opts, tb_logger):
         uav_num=opts.uav_num, max_length=opts.max_length)
 
     if opts.resume:
-        epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
+        epoch_resume = load_data.get('epoch')
+        if epoch_resume is None:
+            epoch_resume = int(os.path.splitext(os.path.split(opts.resume)[-1])[0].split("-")[1])
 
-        torch.set_rng_state(load_data['rng_state'])
-        if opts.use_cuda:
+        if 'rng_state' in load_data:
+            torch.set_rng_state(load_data['rng_state'])
+        if opts.use_cuda and load_data.get('cuda_rng_state') is not None:
             torch.cuda.set_rng_state_all(load_data['cuda_rng_state'])
         # Set the random states
         # Dumping of state was done before epoch callback, so do that now (model is loaded)

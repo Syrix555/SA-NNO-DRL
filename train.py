@@ -1,4 +1,5 @@
 import os
+import json
 import time
 from tqdm import tqdm
 import torch
@@ -117,13 +118,18 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
 
     if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs == 0) or epoch == opts.n_epochs - 1:
         print('Saving model and state...')
+        config = json.loads(json.dumps(vars(opts), default=str))
         torch.save(
             {
+                'checkpoint_format_version': 2,
+                'epoch': epoch,
                 'model': get_inner_model(model).state_dict(),
                 'optimizer': optimizer.state_dict(),
+                'lr_scheduler': lr_scheduler.state_dict(),
                 'rng_state': torch.get_rng_state(),
-                'cuda_rng_state': torch.cuda.get_rng_state_all(),
-                'baseline': baseline.state_dict()
+                'cuda_rng_state': torch.cuda.get_rng_state_all() if opts.use_cuda else None,
+                'baseline': baseline.state_dict(),
+                'config': config,
             },
             os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch))
         )
