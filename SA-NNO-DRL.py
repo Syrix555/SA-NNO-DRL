@@ -1,5 +1,6 @@
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
 import numpy as np
 import math
 from torch.utils.data import DataLoader
@@ -294,29 +295,99 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
     return best_fit, best_index, best_line
 
 
-def plot_picture(depot, task, index, line, best_fit):
-    color = plt.get_cmap('Paired')
+def plot_fig7(results, output_path):
+    """Save SA-NNO-DRL routes in the layout used by paper Fig. 7(a)."""
+    if not results:
+        raise ValueError("At least one result is required for plotting")
 
-    plt.figure(figsize=(5.5, 5))
-    for i in range(len(line)):
-        route = task[index[i][line[i]]]
-        route = np.concatenate((depot[None, :], route, depot[None, :]), 0)
-        xs = route[:, 0]
-        ys = route[:, 1]
-        dx = np.roll(xs, -1) - xs
-        dy = np.roll(ys, -1) - ys
-        plt.quiver(xs, ys, dx, dy, scale_units='xy', angles='xy', scale=1, color=color.colors[2*i+1])
+    route_colors = [
+        "#1f77b4",  # blue
+        "#ff7f0e",  # orange
+        "#2ca02c",  # green
+        "#d62728",  # red
+        "#9467bd",  # purple
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+    ]
+    ncols = len(results)
+    fig, axes = plt.subplots(
+        1,
+        ncols,
+        figsize=(3.8 * ncols, 3.7),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+    axes = axes[0]
 
-    plt.scatter(task[:, 0], task[:, 1], s=10)
-    plt.scatter(depot[0], depot[1], marker='s', c='black', s=30)
-    plt.axis([0, 1, 0, 1])
-    plt.title('Total profits:{}'.format(best_fit))
+    for ax, result in zip(axes, results):
+        task = np.asarray(result["task"], dtype=np.float32)
+        depot = np.asarray(result["depot"], dtype=np.float32)
+        index = result["index"]
+        line = result["line"]
+        best_fit = float(result["fitness"])
 
-    plt.xlim(0, 1)
-    plt.ylim(0, 1)
+        # Keep all target points blue, as in Fig. 7. Route colors identify UAVs.
+        ax.scatter(
+            task[:, 0],
+            task[:, 1],
+            s=8,
+            c="#1479c9",
+            marker="o",
+            linewidths=0,
+            zorder=2,
+        )
 
-    plt.savefig('sa_drl1.eps', dpi=1000)
-    plt.show()
+        for uav_id, local_route in enumerate(line):
+            local_route = np.asarray(local_route, dtype=np.int64)
+            assignment = np.asarray(index[uav_id], dtype=np.int64)
+            if local_route.size == 0:
+                continue
+            route_nodes = task[assignment[local_route]]
+            route = np.concatenate((depot[None, :], route_nodes, depot[None, :]), axis=0)
+            color = route_colors[uav_id % len(route_colors)]
+
+            xs = route[:, 0]
+            ys = route[:, 1]
+            ax.plot(xs, ys, color=color, linewidth=1.0, alpha=0.9, zorder=3)
+            ax.quiver(
+                xs[:-1],
+                ys[:-1],
+                np.diff(xs),
+                np.diff(ys),
+                angles="xy",
+                scale_units="xy",
+                scale=1,
+                color=color,
+                width=0.0035,
+                headwidth=4.5,
+                headlength=5.5,
+                headaxislength=4.5,
+                minlength=0,
+                zorder=4,
+            )
+
+        ax.scatter(
+            depot[0],
+            depot[1],
+            marker="s",
+            c="black",
+            s=32,
+            zorder=5,
+        )
+        ax.set_title(f"Total profits:{best_fit:.1f}", fontsize=10)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xticks(np.linspace(0, 1, 6))
+        ax.set_yticks(np.linspace(0, 1, 6))
+        ax.tick_params(labelsize=8)
+
+    fig.text(0.5, 0.01, "(a)", ha="center", va="bottom", fontsize=10)
+    fig.tight_layout(rect=(0.0, 0.04, 1.0, 1.0), pad=1.0)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -326,8 +397,33 @@ if __name__ == "__main__":
     parser.add_argument('--num-samples', type=int, default=30)
     parser.add_argument('--uav-num', type=int, default=5)
     parser.add_argument('--device', default=str(device))
+    parser.add_argument(
+        '--plot-dir',
+        default=None,
+        help='Save a Fig. 7-style multi-panel route figure for the evaluated samples',
+    )
+    parser.add_argument(
+        '--plot-name',
+        default='fig7_sa',
+        help='Output stem for the Fig. 7-style figure (default: fig7_sa)',
+    )
+    parser.add_argument(
+        '--plot-format',
+        choices=('png', 'pdf', 'eps'),
+        default='png',
+        help='Format for the Fig. 7-style figure',
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Seed NumPy SA moves for reproducible routes',
+    )
     opts = parser.parse_args()
     device = resolve_device(opts.device)
+    if opts.seed is not None:
+        np.random.seed(opts.seed)
+        torch.manual_seed(opts.seed)
     model_path = resolve_model_path(opts.model)
     model, _ = load_model(str(model_path))
     model.to(device)
@@ -352,6 +448,7 @@ if __name__ == "__main__":
         # prize = torch.ones(task_num)
         data = make_dataset(filename, num_samples)
         time_table, best_fit_table, best_index_table, best_line_table = [], [], [], []
+        plot_results = []
         for index, batch in enumerate(data):
             start = time.time()
             task = batch['loc']
@@ -364,8 +461,15 @@ if __name__ == "__main__":
             best_fit_table.append(best_fit)
             best_index_table.append(best_index)
             best_line_table.append(best_line)
+            if opts.plot_dir is not None:
+                plot_results.append({
+                    "task": np.asarray(task),
+                    "depot": np.asarray(depot),
+                    "index": best_index,
+                    "line": best_line,
+                    "fitness": best_fit,
+                })
             print(best_fit)
-                # plot_picture(depot, task, best_index, best_line)
             # write time_rtable and best_fit_table to result file
         datadir = os.path.join('results', 'drl_small_data')
         os.makedirs(datadir, exist_ok=True)
@@ -379,6 +483,14 @@ if __name__ == "__main__":
         #     ))
         print("fitness:",np.array(best_fit_table).mean())
         print(np.array(time_table).mean())
+        if opts.plot_dir is not None:
+            os.makedirs(opts.plot_dir, exist_ok=True)
+            plot_path = os.path.join(
+                opts.plot_dir,
+                f"{opts.plot_name}.{opts.plot_format}",
+            )
+            plot_fig7(plot_results, plot_path)
+            print("figure:", plot_path)
         # save_dataset(result, filename2)
 
 
