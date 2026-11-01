@@ -8,6 +8,7 @@ class StateOP(NamedTuple):
     # Fixed input
     coords: torch.Tensor  # Depot + loc
     prize: torch.Tensor
+    valid_nodes: torch.Tensor  # Depot + real targets; False for SA padding
     # Max length is not a single value, but one for each node indicating max length tour should have when arriving
     # at this node, so this is max_length - d(depot, node)
     max_length: torch.Tensor
@@ -59,9 +60,14 @@ class StateOP(NamedTuple):
 
         batch_size, n_loc, _ = loc.size()
         coords = torch.cat((depot[:, None, :], loc), -2)
+        valid_nodes = input.get('valid_nodes', torch.ones_like(prize, dtype=torch.bool))
+        if valid_nodes.shape != prize.shape:
+            raise ValueError("valid_nodes must match the prize shape")
+        valid_nodes = valid_nodes.to(device=loc.device, dtype=torch.bool)
         return StateOP(
             coords=coords,
             prize=F.pad(prize, (1, 0), mode='constant', value=0),  # add 0 for depot
+            valid_nodes=F.pad(valid_nodes, (1, 0), mode='constant', value=True),
             # max_length is max length allowed when arriving at node, so subtract distance to return to depot
             # Additionally, substract epsilon margin for numeric stability
             max_length=(max_length[:, None] -
@@ -88,13 +94,14 @@ class StateOP(NamedTuple):
         return self.max_length[self.ids, 0] - self.lengths
 
     def get_k_nearest_neighbor(self):
-        k_nn = (self.coords[:, 0, :][:, None, :] - self.coords[:, 1:, :]).norm(p=2, dim=-1).sort(dim=-1)[1]
-        mask_idx = (self.coords[:, 0, :][:, None, :] - self.coords[:, 1:, :]).norm(p=2, dim=-1) > self.max_length[:, 1:]
-        mask_knn = torch.gather(mask_idx, 1, k_nn)
-        k_nn += 1
-        k_nn[mask_knn] = 0
-
-        return k_nn
+        ids = self.ids[:, 0]
+        coords = self.coords[ids]
+        distances = (coords[:, :1, :] - coords[:, 1:, :]).norm(p=2, dim=-1)
+        invalid = ~self.valid_nodes[ids, 1:] | (distances > self.max_length[ids, 1:])
+        # Keep every feasible real start ahead of padding and unreachable nodes.
+        order = distances.masked_fill(invalid, float('inf')).argsort(dim=-1)
+        # Unused candidates stay at the actual depot, ending their routes.
+        return (order + 1).masked_fill(invalid.gather(1, order), 0)
 
     def get_final_cost(self):
 
@@ -160,7 +167,7 @@ class StateOP(NamedTuple):
         # Cannot visit if already visited or if length that would be upon arrival is too large to return to depot
         # If the depot has already been visited then we cannot visit anymore
         visited_ = self.visited.to(exceeds_length.dtype)
-        mask = visited_ | visited_[:, :, 0:1] | exceeds_length
+        mask = visited_ | visited_[:, :, 0:1] | exceeds_length | ~self.valid_nodes[self.ids, :]
         # Depot can always be visited
         # (so we do not hardcode knowledge that this is strictly suboptimal if other options are available)
         mask[:, :, 0] = 0

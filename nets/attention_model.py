@@ -238,8 +238,8 @@ class AttentionModel(nn.Module):
 
         outputs = []
         sequences = []
-        _, graph_szie, _ = embeddings.size()
-        pomo_size = int(graph_szie/4)
+        _, graph_size, _ = embeddings.size()
+        pomo_size = max(1, graph_size // 4)
 
         state = self.problem.make_state(input, pomo_size)
 
@@ -255,6 +255,8 @@ class AttentionModel(nn.Module):
                 knn = state.get_k_nearest_neighbor()
 
                 selected = knn[:, :pomo_size]
+                if selected.size(1) < pomo_size:
+                    selected = F.pad(selected, (0, pomo_size - selected.size(1)), value=0)
                 # selected = torch.arange(1, self.pomo_size + 1, device=embeddings.device)[None, :].expand(batch_size, self.pomo_size)
                 log_p_ = torch.ones(size=(batch_size, pomo_size), requires_grad=True, device=embeddings.device)
                 # encoded_first_node = fixed.node_embeddings.gather(dim=1, index=selected[:, :, None].expand(batch_size, self.pomo_size, self.embedding_dim))

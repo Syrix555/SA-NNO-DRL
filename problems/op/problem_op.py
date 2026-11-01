@@ -15,7 +15,7 @@ class OP(object):
         if pi.size(-1) == 1:  # In case all tours directly return to depot, prevent further problems
             assert (pi == 0).all(), "If all length 1 tours, they should be zero"
             # Return
-            return torch.zeros(pi.size(0), dtype=torch.float, device=pi.device), None
+            return torch.zeros(pi.shape[:2], dtype=torch.float, device=pi.device), None
 
         # Check that tours are valid, i.e. contain 0 to n -1
         sorted_pi = pi.data.sort(-1)[0]

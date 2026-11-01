@@ -183,6 +183,8 @@ def augment(input, N, problem):
             features = ('demand',)
         elif is_orienteering:
             features = ('prize', 'max_length')
+            if 'valid_nodes' in input:
+                features += ('valid_nodes',)
         else:
             assert is_pctsp
             features = ('deterministic_prize', 'penalty')

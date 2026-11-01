@@ -5,14 +5,12 @@ import numpy as np
 import math
 from torch.utils.data import DataLoader
 import torch
-import warnings
-import csv
 import os
 import time
-import re
 import argparse
 from train import augment
-from make_dataset import make_dataset, check_extension, save_dataset
+from make_dataset import make_dataset
+from inference_results import InferenceResults, instance_result
 from runtime_config import resolve_model_path, resolve_device
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
@@ -76,7 +74,8 @@ def cal_fitness(dataset, uav_num):
     return fitness.cpu().numpy(), pi.cpu().numpy()
 
 
-def validate_allocation(task, depot, prize, max_length, index_table, line, tolerance=1e-5):
+def validate_allocation(task, depot, prize, max_length, index_table, line, tolerance=1e-5,
+                        expected_prize=None):
     """Validate assignment uniqueness, route budgets and reported reward."""
     task = np.asarray(task, dtype=np.float32)
     depot = np.asarray(depot, dtype=np.float32).reshape(2)
@@ -99,6 +98,8 @@ def validate_allocation(task, depot, prize, max_length, index_table, line, toler
             raise ValueError("SA route contains an out-of-range local node")
         global_ids = assignment[selected] if len(selected) else np.empty(0, dtype=np.int64)
         if len(global_ids):
+            if (global_ids < 0).any() or (global_ids >= len(task)).any():
+                raise ValueError("SA route contains an out-of-range global node")
             visited.extend(global_ids.tolist())
             route = np.concatenate((depot[None, :], task[global_ids], depot[None, :]), axis=0)
             route_length = np.linalg.norm(route[1:] - route[:-1], axis=1).sum()
@@ -108,6 +109,13 @@ def validate_allocation(task, depot, prize, max_length, index_table, line, toler
             total_prize += float(prize[global_ids].sum())
     if len(visited) != len(set(visited)):
         raise ValueError("SA allocation assigns a task more than once")
+    if expected_prize is not None:
+        expected_prize = float(expected_prize)
+        if not np.isfinite(expected_prize) or not np.isclose(
+                total_prize, expected_prize, rtol=1e-5, atol=tolerance):
+            raise ValueError(
+                f"SA reward mismatch: routes collect {total_prize}, reported {expected_prize}"
+            )
     return total_prize, total_length
 
 
@@ -155,6 +163,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
         dataset.append({
             'loc': torch.FloatTensor(loc).to(device),
             'prize': torch.FloatTensor(prz).to(device),
+            'valid_nodes': torch.tensor(new_index_table[i] != task_num, dtype=torch.bool, device=device),
             'depot': torch.FloatTensor(depot).to(device),
             'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
         })
@@ -227,6 +236,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                     dataset.append({
                         'loc': torch.FloatTensor(loc).to(device),
                         'prize': torch.FloatTensor(prz).to(device),
+                        'valid_nodes': torch.tensor(renew_index_table[j] != task_num, dtype=torch.bool, device=device),
                         'depot': torch.FloatTensor(depot).to(device),
                         'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
                     })
@@ -262,6 +272,7 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                     dataset.append({
                         'loc': torch.FloatTensor(loc).to(device),
                         'prize': torch.FloatTensor(prz).to(device),
+                        'valid_nodes': torch.tensor(renew_index_table[j] != task_num, dtype=torch.bool, device=device),
                         'depot': torch.FloatTensor(depot).to(device),
                         'max_length': torch.tensor(max_length, dtype=torch.float32).to(device)
                     })
@@ -291,7 +302,10 @@ def sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num):
                     line = new_line
         T *= alpha
         # duration = time.time() - start
-    validate_allocation(task, depot, prize, max_length, best_index, best_line)
+    validate_allocation(
+        task[:task_num], depot, prize[:task_num], max_length, best_index, best_line,
+        expected_prize=best_fit,
+    )
     return best_fit, best_index, best_line
 
 
@@ -398,6 +412,14 @@ if __name__ == "__main__":
     parser.add_argument('--uav-num', type=int, default=5)
     parser.add_argument('--device', default=str(device))
     parser.add_argument(
+        '--output-dir', default='results/sa',
+        help='Root for unique run directories containing CSV, routes and summary',
+    )
+    parser.add_argument(
+        '--weight-source', choices=('self-trained', 'external', 'unspecified'),
+        default='unspecified', help='Declared provenance of the checkpoint',
+    )
+    parser.add_argument(
         '--plot-dir',
         default=None,
         help='Save a Fig. 7-style multi-panel route figure for the evaluated samples',
@@ -417,9 +439,11 @@ if __name__ == "__main__":
         '--seed',
         type=int,
         default=None,
-        help='Seed NumPy SA moves for reproducible routes',
+        help='Seed NumPy SA moves and PyTorch augmentation (default: no fixed seed)',
     )
     opts = parser.parse_args()
+    if opts.num_samples <= 0 or opts.uav_num <= 0:
+        parser.error('--num-samples and --uav-num must be positive')
     device = resolve_device(opts.device)
     if opts.seed is not None:
         np.random.seed(opts.seed)
@@ -430,37 +454,35 @@ if __name__ == "__main__":
     model.eval()
     model.set_decode_type('greedy')
 
-    fileNameList = [opts.dataset]
-    for filename in fileNameList:
-    # filename = 'small_data/op/op_unif200_len2_seed12345.pkl'
-        print(filename)
-        new_filename = os.path.splitext(os.path.basename(filename))[0]
-        #filename = os.path.join('data/op/const', filename)
-        num_samples = opts.num_samples
-        # np.random.seed(1234567)
-        # task_num = 200
-        uav_num = opts.uav_num
-        print('UAV num:', uav_num)
-        # depot = np.array([0.5, 0.5])
-        # MAX_LENGTHS = 3.
-        # dim = 2
-        # task = np.random.uniform(0, 1, (task_num, dim))
-        # prize = torch.ones(task_num)
-        data = make_dataset(filename, num_samples)
-        time_table, best_fit_table, best_index_table, best_line_table = [], [], [], []
-        plot_results = []
+    print(opts.dataset)
+    print('UAV num:', opts.uav_num)
+    data = make_dataset(opts.dataset, opts.num_samples)
+    if not data:
+        parser.error('The dataset contains no instances')
+    if any(len(batch['loc']) < opts.uav_num for batch in data):
+        parser.error('Each instance must have at least --uav-num targets')
+    results = InferenceResults(vars(opts), model_path, device)
+    print("results:", results.directory)
+    print(f"samples: {len(data)} (requested: {opts.num_samples})")
+    plot_results = []
+    try:
         for index, batch in enumerate(data):
-            start = time.time()
             task = batch['loc']
             depot = batch['depot']
             prize = batch['prize']
             MAX_LENGTHS = batch['max_length']
-            best_fit, best_index, best_line = sa_allocate(task, depot, prize, MAX_LENGTHS, uav_num)
-            duration = time.time() - start
-            time_table.append(duration)
-            best_fit_table.append(best_fit)
-            best_index_table.append(best_index)
-            best_line_table.append(best_line)
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            start = time.perf_counter()
+            best_fit, best_index, best_line = sa_allocate(
+                task, depot, prize, MAX_LENGTHS, opts.uav_num,
+            )
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
+            duration = time.perf_counter() - start
+            results.add(instance_result(
+                index, batch, best_fit, duration, best_index, best_line,
+            ))
             if opts.plot_dir is not None:
                 plot_results.append({
                     "task": np.asarray(task),
@@ -470,28 +492,20 @@ if __name__ == "__main__":
                     "fitness": best_fit,
                 })
             print(best_fit)
-            # write time_rtable and best_fit_table to result file
-        datadir = os.path.join('results', 'drl_small_data')
-        os.makedirs(datadir, exist_ok=True)
-        filename2 = os.path.join(datadir, new_filename)
-
-        # assert not os.path.isfile(check_extension(filename2)), \
-        #     "File already exists! Try running with -f option to overwrite."
-        # result = list(zip(
-        #     time_table,
-        #     best_fit_table
-        #     ))
-        print("fitness:",np.array(best_fit_table).mean())
-        print(np.array(time_table).mean())
-        if opts.plot_dir is not None:
-            os.makedirs(opts.plot_dir, exist_ok=True)
-            plot_path = os.path.join(
-                opts.plot_dir,
-                f"{opts.plot_name}.{opts.plot_format}",
-            )
-            plot_fig7(plot_results, plot_path)
-            print("figure:", plot_path)
-        # save_dataset(result, filename2)
+    except BaseException as error:
+        results.save("interrupted" if isinstance(error, KeyboardInterrupt) else "failed")
+        raise
+    results.save("completed")
+    print("fitness:", np.mean([r["reward"] for r in results.records]))
+    print(np.mean([r["duration_seconds"] for r in results.records]))
+    if opts.plot_dir is not None:
+        os.makedirs(opts.plot_dir, exist_ok=True)
+        plot_path = os.path.join(
+            opts.plot_dir,
+            f"{opts.plot_name}.{opts.plot_format}",
+        )
+        plot_fig7(plot_results, plot_path)
+        print("figure:", plot_path)
 
 
 
