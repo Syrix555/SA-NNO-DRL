@@ -1,10 +1,29 @@
 # SA-NNO-DRL
 
-Code for Swarm and Evolutionary Computation Paper: Multi-UAV Reconnaissance Mission Planning via Deep Reinforcement Learning with Simulated Annealing
+Reproduction of Fan et al., *Multi-UAV reconnaissance mission planning via deep reinforcement learning with simulated annealing*, Swarm and Evolutionary Computation 93 (2025), 101858. DOI: `10.1016/j.swevo.2025.101858`.
+
+This repository builds on the authors' `mingfan321/SA-NNO-DRL` code, with runtime repairs, explicit padding masks, route validation, structured result export and route plotting.
+
+## Reproduction status
+
+The four experiments were completed on November 2, 2026. Each case uses a separately self-trained model, the final `epoch-9.pt` checkpoint, five UAVs and 30 test instances.
+
+| Case | Training subproblem size | Test targets | Reward mean +/- sample SD | Time in seconds mean +/- sample SD |
+| --- | --- | --- | --- | --- |
+| T100U5C | 20 | 100 | 98.1667 +/- 1.2888 | 0.1698 +/- 0.0637 |
+| T100U5U | 20 | 100 | 50.4427 +/- 3.5040 | 0.1702 +/- 0.0594 |
+| T200U5C | 40 | 200 | 170.8000 +/- 3.9427 | 0.2639 +/- 0.0643 |
+| T200U5U | 40 | 200 | 90.7850 +/- 4.4567 | 0.2538 +/- 0.0604 |
+
+`C` means constant target prizes of 1; `U` means discrete uniform prizes from 0.01 to 1.00. Each UAV has a roundtrip length budget of 2.0. Saved results for all 120 instances and 600 UAV routes passed feasibility and reward consistency checks. Training curves and route figures have also been produced.
+
+The scope is the SA-NNO-DRL method on these four cases. It excludes baseline comparisons, ablations and multiple training seeds, and does not establish optimality or reproduce every table in the paper. Standard deviations are across test instances. Time covers SA and route validation, including the first instance's cold startup, and excludes loading, export and plotting.
+
+See [training-and-evaluation-records.md](doc/training-and-evaluation-records.md) for the configurations, commands, result definitions and analysis.
 
 ## Environment
 
-The maintained runtime is Python 3.11 with PyTorch 2.14.1 and CUDA 13.0. The validated GPU target is an NVIDIA RTX 5080 (compute capability 12.0) with driver 580.159.03.
+The formal inference runs used Python 3.11.15, NumPy 2.4.6, PyTorch 2.14.1+cu130 and CUDA 13.0 on an NVIDIA GeForce RTX 5080. Driver 580.159.03 was recorded during the earlier environment check.
 
 Use uv to reproduce the environment. The CUDA and CPU PyTorch extras are mutually exclusive:
 
@@ -34,18 +53,22 @@ uv run --extra cu130 python run.py \
 
 Evaluate or resume from a checkpoint with `--load_path` or `--resume`. The checkpoint includes a format version, model/optimizer/scheduler states, RNG states and a configuration snapshot. Legacy checkpoints containing Python objects require the explicit `--allow_legacy_checkpoint` flag.
 
-Run SA inference with a trained checkpoint:
+The four final self-trained checkpoints are stored in `weights/<case>/epoch-9.pt`, each with its paired `args.json`. The case directories are `T100U5C`, `T100U5U`, `T200U5C` and `T200U5U`.
+
+Run SA inference with the T200U5C checkpoint:
 
 ```bash
 uv run --extra cu130 python SA-NNO-DRL.py \
-  --model outputs/paper/op_40/t40_const_full_20261028T220058/epoch-9.pt \
-  --dataset op_data/const/op_const40_len2_seed12345.pkl \
+  --model weights/T200U5C/epoch-9.pt \
+  --dataset op_data/const/op_const200_len2_seed12345.pkl \
   --num-samples 30 --uav-num 5 --device cuda:0 \
   --seed 1234 --weight-source self-trained \
   --output-dir results/sa
 ```
 
-The checkpoint path above is from the user's completed GPU training run; weights are kept on that machine. When `--model` is a directory, the highest numbered `epoch-N.pt` is selected and its actual path is recorded. Keep `args.json` beside the checkpoint. For the unif run, use `t40_unif_full_20261029T030049/epoch-9.pt` and `op_data/unif/op_unif40_len2_seed12345.pkl`.
+Keep `args.json` beside the checkpoint. When `--model` is a directory, the highest numbered `epoch-N.pt` is selected and its actual path is recorded; the formal experiments explicitly selected `epoch-9.pt`. For T200U5U, use `weights/T200U5U/epoch-9.pt` and `op_data/unif/op_unif200_len2_seed12345.pkl`.
+
+`--graph_size` is the training subproblem size: 20 for T100 and 40 for T200. The training generator splits a mother instance with `graph_size * uav_num` targets into angular sectors. SA inference takes the full 100- or 200-target instance and allocates targets among UAVs. The four formal cases use their corresponding trained models.
 
 ## Saved inference results
 
@@ -83,4 +106,4 @@ Optional Fig. 7-style plotting remains available:
 
 Plotting puts all evaluated instances in one row, so use a small `--num-samples` for readable figures. Structured results are saved with or without plotting.
 
-The target environment has been validated for CUDA startup, GPU training, checkpoint evaluation/resume and SA inference. The user reports completed const/unif training with checkpoints, CSV curves and TensorBoard events; the artifact inventory and remaining provenance gaps are recorded in [training-and-evaluation-records.md](doc/training-and-evaluation-records.md). Result export has been tested locally with a small CPU inference run; the updated exporter still needs to be exercised on the target GPU. Baseline comparisons, Gap and the full paper experiment matrix remain separate work.
+The completed route figures show instances 0, 1 and 2 from each formal case, using the saved routes. They follow the SA row's visual style in Fig. 7, with a fixed central hub and no OR-Tools comparison row. Adding plotting options to an inference command performs a new inference run; it does not reload the saved formal routes.

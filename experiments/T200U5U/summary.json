@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "status": "completed",
+  "started_at_utc": "2026-11-02T09:24:51.590741+00:00",
+  "updated_at_utc": "2026-11-02T09:24:59.467473+00:00",
+  "requested_samples": 30,
+  "completed_samples": 30,
+  "std_definition": "Across instances, sample standard deviation (ddof=1); null for n<2.",
+  "timing_definition": "Per-instance SA and allocation validation, synchronized on CUDA; excludes loading, export and plotting; includes first-instance cold startup.",
+  "metrics": {
+    "reward_mean": 90.78500137329101,
+    "reward_std": 4.456704551490835,
+    "duration_seconds_mean": 0.25379426146585804,
+    "duration_seconds_std": 0.06043331886553889
+  },
+  "options": {
+    "model": "/home/xxy/research/SA-NNO-DRL/outputs/paper/op_40/t40_unif_full_20261029T030049/epoch-9.pt",
+    "dataset": "/home/xxy/research/SA-NNO-DRL/op_data/unif/op_unif200_len2_seed12345.pkl",
+    "num_samples": 30,
+    "uav_num": 5,
+    "device": "cuda:0",
+    "output_dir": "/home/xxy/research/SA-NNO-DRL/results/course_report/20261102_172404/T200U5U",
+    "weight_source": "self-trained",
+    "plot_dir": null,
+    "plot_name": "fig7_sa",
+    "plot_format": "png",
+    "seed": 1234
+  },
+  "metadata": {
+    "dataset": {
+      "path": "/home/xxy/research/SA-NNO-DRL/op_data/unif/op_unif200_len2_seed12345.pkl",
+      "sha256": "dd2f43316ebf7caadec3ec0962240f3e8fd0b746d1c4401c50a04aea61dbad2d",
+      "size_bytes": 187384
+    },
+    "checkpoint": {
+      "path": "/home/xxy/research/SA-NNO-DRL/outputs/paper/op_40/t40_unif_full_20261029T030049/epoch-9.pt",
+      "sha256": "7e0b2cbebab412acd56c9dbf8c70725d91c8e547375869ba8ef79e00e0a88cc8",
+      "size_bytes": 15957531
+    },
+    "model_args": {
+      "path": "/home/xxy/research/SA-NNO-DRL/outputs/paper/op_40/t40_unif_full_20261029T030049/args.json",
+      "sha256": "592541e1c554cdfccc660e965c2f1aef8180abfd7257303edf57f959b048110c",
+      "size_bytes": 1072
+    },
+    "weight_source": "self-trained",
+    "environment": {
+      "python": "3.11.15",
+      "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+      "numpy": "2.4.6",
+      "torch": "2.14.1+cu130",
+      "cuda_version": "13.0",
+      "cudnn_version": 92400,
+      "device": "cuda:0",
+      "device_name": "NVIDIA GeForce RTX 5080",
+      "deterministic_algorithms": false,
+      "inference_git_revision": "0142df989696cd893a9ea9313f5e5a02b1437464",
+      "inference_git_dirty": true
+    },
+    "argv": [
+      "/home/xxy/research/SA-NNO-DRL/.venv/bin/python3",
+      "SA-NNO-DRL.py",
+      "--model",
+      "/home/xxy/research/SA-NNO-DRL/outputs/paper/op_40/t40_unif_full_20261029T030049/epoch-9.pt",
+      "--dataset",
+      "/home/xxy/research/SA-NNO-DRL/op_data/unif/op_unif200_len2_seed12345.pkl",
+      "--num-samples",
+      "30",
+      "--uav-num",
+      "5",
+      "--device",
+      "cuda:0",
+      "--seed",
+      "1234",
+      "--weight-source",
+      "self-trained",
+      "--output-dir",
+      "/home/xxy/research/SA-NNO-DRL/results/course_report/20261102_172404/T200U5U"
+    ],
+    "working_directory": "/home/xxy/research/SA-NNO-DRL"
+  }
+}
